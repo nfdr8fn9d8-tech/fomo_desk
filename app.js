@@ -66,10 +66,36 @@
     setOffline(false);
   }
 
+
+  // Backup when a Home Screen launch has no #d= (iOS can drop it): paste the
+  // Telegram link once; only the d= part is kept, in this app's own storage.
+  function showPasteBox() {
+    if (document.getElementById("dp-paste")) return;
+    var home = document.getElementById("home");
+    if (!home) return;
+    var box = document.createElement("div");
+    box.id = "dp-paste";
+    box.style.cssText = "margin:24px 16px;display:flex;flex-direction:column;gap:10px";
+    var inp = document.createElement("input");
+    inp.type = "url"; inp.placeholder = "Paste your Desk link from Telegram";
+    inp.autocomplete = "off"; inp.autocapitalize = "off"; inp.spellcheck = false;
+    inp.style.cssText = "background:#1c1c1e;color:#fff;border:0;border-radius:10px;padding:12px;font-size:16px";
+    var btn = document.createElement("button");
+    btn.type = "button"; btn.textContent = "Connect";
+    btn.style.cssText = "background:#0a84ff;color:#fff;border:0;border-radius:10px;padding:12px;font-size:17px;font-weight:600";
+    btn.addEventListener("click", function () {
+      var mm = /(?:#|&|^)d=([A-Za-z0-9_\-]{32,})/.exec((inp.value || "").trim());
+      if (!mm) { inp.value = ""; inp.placeholder = "That link has no #d= part, copy it again"; return; }
+      try { window.localStorage.setItem(LS_KEY, mm[1]); } catch (e) {}
+      box.remove(); setEmpty("Waiting for the first trade"); poll();
+    });
+    box.appendChild(inp); box.appendChild(btn); home.appendChild(box);
+  }
+
   function poll() {
     var dp = getDataPath();
     if (!dp) {
-      setEmpty("Open the link from Telegram");
+      setEmpty("Open the link from Telegram"); showPasteBox();
       setOffline(false);
       return;
     }
@@ -94,7 +120,7 @@
   stashDataPath();
 
   if (!getDataPath()) {
-    setEmpty("Open the link from Telegram");
+    setEmpty("Open the link from Telegram"); showPasteBox();
   } else {
     setEmpty("Waiting for the first trade");
   }
