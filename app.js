@@ -1151,15 +1151,272 @@
       "</span></div></div>";
 
     html += '<div class="group-title">Settings</div>';
-    html += '<p class="note">Read-only here. Change a value in Telegram. The full sliders land in a later step.</p>';
+    html += '<p class="note">Pick a value, then send the Telegram command. The number here is the one the desk has published — it is not saved from the app.</p>';
     html += renderSettingsGroups();
 
     el.stage.innerHTML = html;
+    paintAllRanges(el.stage);
     if (ui.group) {
       var target = document.getElementById("grp-" + ui.group);
       if (target) setTimeout(function () { target.scrollIntoView({ block: "start" }); }, 30);
     }
   }
+
+
+  var TG_BOT = "https://t.me/ak4at_desk_bot";
+
+  function settingEntry(key) {
+    return (cache.settings && cache.settings.settings && cache.settings.settings[key]) || {};
+  }
+
+  function publishedValue(key) {
+    var e = settingEntry(key);
+    return e.value;
+  }
+
+  function effectiveValue(key) {
+    if (ui.setPreview && ui.setPreview.key === key) return ui.setPreview.value;
+    return publishedValue(key);
+  }
+
+  function fmtNum(n) {
+    n = Number(n);
+    if (!isFinite(n)) return String(n);
+    if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));
+    return String(parseFloat(Number(n).toPrecision(12)));
+  }
+
+  function fmtMoneyRaw(n) {
+    n = Number(n);
+    if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));
+    return n.toFixed(2);
+  }
+
+  function fmtSetting(key, value, entry) {
+    entry = entry || settingEntry(key);
+    if (key === "risk.stop_pct") return "-" + fmtNum(value) + "%";
+    if (typeof value === "boolean") return value ? "on" : "off";
+    var unit = entry.unit || "";
+    if (key === "desk.paper_start_stack" || key.slice(-4) === "_usd") {
+      return "$" + fmtMoneyRaw(value);
+    }
+    if (typeof value === "number" && (key.slice(-4) === "_pct" || key.slice(-7) === "_change")) {
+      return fmtNum(value) + "%";
+    }
+    if (typeof value === "number" && unit === "ratio") return Number(value).toFixed(2);
+    return String(value);
+  }
+
+  function formatSetCommand(key, value, entry) {
+    entry = entry || settingEntry(key);
+    if (key === "desk.mode") return String(value).toUpperCase() === "LIVE" ? "live" : "paper";
+    var kind = entry.kind || "";
+    var name;
+    if (kind === "bool" || kind === "url" || kind === "str" || kind === "time" || key.indexOf("desk.") === 0) {
+      name = key;
+    } else {
+      name = entry.alias || key;
+    }
+    var shown = fmtSetting(key, value, entry);
+    if (key === "risk.stop_pct") return "set stop to " + shown;
+    if (kind === "bool") return "set " + name + " " + shown;
+    if (kind === "enum") return "set " + name + " " + shown;
+    return "set " + name + " to " + shown;
+  }
+
+  function displayValue(key, value, entry) {
+    entry = entry || settingEntry(key);
+    if (value == null || value === "") return "—";
+    var unit = entry.unit || "";
+    if (key === "risk.stop_pct") return "-" + fmtNum(value) + "%";
+    if (typeof value === "boolean") return value ? "On" : "Off";
+    if (unit === "usd" || key === "desk.paper_start_stack") {
+      var n = Number(value);
+      var opts = (Math.abs(n - Math.round(n)) < 1e-9)
+        ? { maximumFractionDigits: 0 }
+        : { minimumFractionDigits: 2, maximumFractionDigits: 2 };
+      return "$" + n.toLocaleString("en-US", opts);
+    }
+    if (unit === "pct") return fmtNum(value) + "%";
+    if (unit === "ratio") return Number(value).toFixed(2);
+    if (unit === "s") return fmtNum(value) + "s";
+    if (unit === "min") return fmtNum(value) + " min";
+    if (unit === "h") return fmtNum(value) + "h";
+    if (unit === "rpm") return fmtNum(value) + " rpm";
+    if (unit === "chars") return fmtNum(value);
+    if (unit === "score") return fmtNum(value);
+    if (unit === "count") return fmtNum(value);
+    return String(value);
+  }
+
+  function displayRange(key, entry) {
+    entry = entry || settingEntry(key);
+    if (entry.kind === "enum" && entry.choices && entry.choices.length) {
+      return entry.choices.join(", ");
+    }
+    if (entry.lo == null || entry.hi == null) {
+      return entry.range || "";
+    }
+    // Stop is stored as a positive percent; range is 0.1–99%, not -0.1%–-99%.
+    if (key === "risk.stop_pct") return fmtNum(entry.lo) + "–" + fmtNum(entry.hi) + "%";
+    var unit = entry.unit || "";
+    var a = displayValue(key, entry.lo, entry);
+    var b = displayValue(key, entry.hi, entry);
+    return a + "–" + b;
+  }
+
+  function displayMeta(key, entry) {
+    var def = displayValue(key, entry.default, entry);
+    if (entry.kind === "bool") return "Default " + def;
+    var rng = displayRange(key, entry);
+    return "Default " + def + (rng ? " · " + rng : "");
+  }
+
+  function parseTyped(entry, raw) {
+    var kind = entry.kind;
+    var s = String(raw).trim();
+    if (kind === "bool") {
+      if (/^(on|true|yes|1)$/i.test(s)) return true;
+      if (/^(off|false|no|0)$/i.test(s)) return false;
+      return null;
+    }
+    if (kind === "int" || kind === "float") {
+      s = s.replace(/,/g, "");
+      if (s.charAt(0) === "$") s = s.slice(1).trim();
+      var pct = s.charAt(s.length - 1) === "%";
+      if (pct) s = s.slice(0, -1).trim();
+      if (entry.unit === "pct" && s.charAt(0) === "-") s = s.slice(1).trim();
+      var n = kind === "int" ? parseInt(s, 10) : parseFloat(s);
+      if (!isFinite(n)) return null;
+      if (pct && entry.unit === "ratio") n = n / 100;
+      return n;
+    }
+    return s;
+  }
+
+  function inRange(entry, value) {
+    if (entry.kind === "int" || entry.kind === "float") {
+      if (entry.lo != null && Number(value) < Number(entry.lo) - 1e-12) return false;
+      if (entry.hi != null && Number(value) > Number(entry.hi) + 1e-12) return false;
+    }
+    if (entry.kind === "enum" && entry.choices && entry.choices.indexOf(value) < 0) return false;
+    if (entry.kind === "bool" && typeof value !== "boolean") return false;
+    return true;
+  }
+
+  function snapStep(entry, value, dir) {
+    var step = Number(entry.step) || (entry.kind === "int" ? 1 : 0.1);
+    var n = Number(value) + dir * step;
+    // Avoid 0.1+0.2 floats: snap to step grid from lo.
+    var lo = entry.lo != null ? Number(entry.lo) : 0;
+    var k = Math.round((n - lo) / step);
+    n = lo + k * step;
+    var prec = step < 1 ? (step < 0.1 ? 3 : 2) : 0;
+    n = Number(n.toFixed(prec));
+    if (entry.kind === "int") n = Math.round(n);
+    if (entry.lo != null && n < entry.lo) n = Number(entry.lo);
+    if (entry.hi != null && n > entry.hi) n = Number(entry.hi);
+    return n;
+  }
+
+  function paintRange(input) {
+    if (!input) return;
+    var min = Number(input.min), max = Number(input.max), val = Number(input.value);
+    var pct = (max === min) ? 0 : ((val - min) / (max - min) * 100);
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    input.style.background =
+      "linear-gradient(to right, #0a84ff 0%, #0a84ff " + pct + "%, #2c2c2e " + pct + "%, #2c2c2e 100%)";
+  }
+
+  function paintAllRanges(root) {
+    (root || document).querySelectorAll("input.set-range").forEach(paintRange);
+  }
+
+  function proposeSet(key, value) {
+    var entry = settingEntry(key);
+    if (!entry || entry.kind == null) return;
+    if (!inRange(entry, value)) {
+      toast("Must be " + (entry.range || displayRange(key, entry)));
+      return;
+    }
+    var published = publishedValue(key);
+    if (published === value || (typeof value === "number" && Number(published) === Number(value))) {
+      toast("Already " + displayValue(key, published, entry));
+      return;
+    }
+    ui.setPreview = { key: key, value: value };
+    // Refresh the visible control to the proposed value without saving.
+    var row = document.querySelector('.set-row[data-key="' + key + '"]');
+    if (row) updateRowPreview(row, key, value, entry);
+    openSetSheet(key, value, entry);
+  }
+
+  function updateRowPreview(row, key, value, entry) {
+    var shown = row.querySelector("[data-role=shown]");
+    if (shown) shown.textContent = displayValue(key, value, entry);
+    var range = row.querySelector("input.set-range");
+    if (range) { range.value = value; paintRange(range); }
+    var exact = row.querySelector("input.set-exact");
+    if (exact && document.activeElement !== exact) exact.value = fmtSettingInput(key, value, entry);
+    var sw = row.querySelector(".ios-switch");
+    if (sw) sw.classList.toggle("on", !!value);
+    row.querySelectorAll(".seg button").forEach(function (b) {
+      b.classList.toggle("on", b.getAttribute("data-value") === String(value));
+    });
+  }
+
+  function fmtSettingInput(key, value, entry) {
+    if (typeof value === "boolean") return value ? "on" : "off";
+    if (typeof value === "number") {
+      if ((entry && entry.unit) === "ratio") return Number(value).toFixed(2);
+      return fmtNum(value);
+    }
+    return String(value == null ? "" : value);
+  }
+
+  function openSetSheet(key, value, entry) {
+    entry = entry || settingEntry(key);
+    var cmd = formatSetCommand(key, value, entry);
+    var title = entry.label || key;
+    var body;
+    if (key === "desk.mode") {
+      // Fall back to the dedicated LIVE/PAPER sheet wording.
+      if (String(value).toUpperCase() === "LIVE") {
+        openSheet(
+          "Switch to LIVE",
+          "LIVE is confirmed in Telegram, not from the app on this setup. You will need to type LIVE, and the desk needs at least one full PAPER night.",
+          "live"
+        );
+        return;
+      }
+      openSheet("Switch to PAPER", "Mode is changed in Telegram on this setup.", "paper");
+      return;
+    }
+    if (key === "auditor.enabled" && value === false) {
+      body = "Turning Auditor off is done in Telegram, and the desk asks twice. The value here stays as published until that command lands.";
+    } else {
+      body = "This setup has no write API. Send the command in Telegram. The value here updates from the desk after it publishes the change — it is not saved from the app.";
+    }
+    openSheet(title, body, cmd);
+  }
+
+  function revertPreviews() {
+    ui.setPreview = null;
+    if (ui.screen === "account" && el.stage) {
+      var y = el.stage.scrollTop;
+      // Only refresh settings rows from published values, keep scroll.
+      var htmlPos = y;
+      // Re-paint each row from published JSON — cheaper than a full render.
+      document.querySelectorAll(".set-row[data-key]").forEach(function (row) {
+        var key = row.getAttribute("data-key");
+        var entry = settingEntry(key);
+        updateRowPreview(row, key, publishedValue(key), entry);
+      });
+      el.stage.scrollTop = htmlPos;
+    }
+  }
+
 
   function renderSettingsGroups() {
     var s = cache.settings;
@@ -1170,22 +1427,159 @@
       var grp = s.groups[g];
       if (!grp) return;
       var title = g.charAt(0).toUpperCase() + g.slice(1);
-      html += '<div class="group-title" id="grp-' + g + '">' + esc(title) + "</div><div class=\"group\">";
-      Object.keys(grp).forEach(function (key) {
-        var e = grp[key];
-        var val = e && e.value;
-        var shown = typeof val === "boolean" ? (val ? "on" : "off") : (val == null ? "—" : String(val));
-        var short = (key.indexOf(g + ".") === 0) ? key.slice(g.length + 1) : key;
-        html += '<div class="set-row">' +
-          '<div class="set-k">' + esc(short) + "</div>" +
-          '<div class="set-v">' + esc(shown) + "</div>" +
-          (e && e.doc ? '<div class="set-doc">' + esc(e.doc) + "</div>" : "") +
-        "</div>";
+      html += '<div class="group-title" id="grp-' + g + '">' + esc(title) + "</div>";
+      var official = [];
+      var extra = [];
+      var keys = Object.keys(grp);
+      var anyOfficial = keys.some(function (k) { return grp[k] && grp[k].official; });
+      keys.forEach(function (key) {
+        if (!anyOfficial || (grp[key] && grp[key].official)) official.push(key);
+        else extra.push(key);
       });
+      html += '<div class="group set-group">';
+      official.forEach(function (key) { html += renderSettingRow(key, grp[key]); });
       html += "</div>";
+      if (extra.length) {
+        html += '<div class="group-title sub" id="grp-' + g + '-more">Also live</div>';
+        html += '<div class="group set-group">';
+        extra.forEach(function (key) { html += renderSettingRow(key, grp[key]); });
+        html += "</div>";
+      }
     });
     return html;
   }
+
+  function renderSettingRow(key, entry) {
+    entry = entry || {};
+    var value = effectiveValue(key);
+    var kind = entry.kind || "str";
+    var label = entry.label || key;
+    var html = '<div class="set-row" data-key="' + esc(key) + '" data-kind="' + esc(kind) + '">';
+    html += '<div class="set-head">';
+    html += '<div class="set-k">' + esc(label) + "</div>";
+    if (kind === "bool") {
+      html += '<button type="button" class="ios-switch' + (value ? " on" : "") +
+        '" data-act="set-bool" data-key="' + esc(key) + '" data-role="shown-switch" aria-pressed="' +
+        (value ? "true" : "false") + '" aria-label="' + esc(label) + '"></button>';
+    } else if (kind !== "url") {
+      html += '<div class="set-v" data-role="shown">' + esc(displayValue(key, value, entry)) + "</div>";
+    }
+    html += "</div>";
+
+    if (key === "desk.mode") {
+      html += '<div class="seg set-seg">';
+      ["PAPER", "LIVE"].forEach(function (m) {
+        html += '<button type="button" data-act="set-enum" data-key="' + esc(key) +
+          '" data-value="' + m + '"' + (String(value).toUpperCase() === m ? ' class="on"' : "") +
+          ">" + m + "</button>";
+      });
+      html += "</div>";
+    } else if (kind === "bool") {
+      // switch lives in set-head
+    } else if (kind === "enum") {
+      html += '<div class="seg set-seg">';
+      (entry.choices || []).forEach(function (c) {
+        html += '<button type="button" data-act="set-enum" data-key="' + esc(key) +
+          '" data-value="' + esc(c) + '"' + (String(value) === String(c) ? ' class="on"' : "") +
+          ">" + esc(c) + "</button>";
+      });
+      html += "</div>";
+    } else if (kind === "int" || kind === "float") {
+      var lo = entry.lo != null ? entry.lo : 0;
+      var hi = entry.hi != null ? entry.hi : (Number(value) * 2 || 100);
+      var step = entry.step != null ? entry.step : (kind === "int" ? 1 : 0.1);
+      html += '<div class="set-ctrl">';
+      html += '<button type="button" class="stepper" data-act="set-step" data-key="' + esc(key) +
+        '" data-dir="-1" aria-label="Decrease">−</button>';
+      html += '<input type="range" class="set-range" min="' + lo + '" max="' + hi + '" step="' + step +
+        '" value="' + esc(value) + '" data-key="' + esc(key) + '" aria-label="' + esc(label) + '">';
+      html += '<button type="button" class="stepper" data-act="set-step" data-key="' + esc(key) +
+        '" data-dir="1" aria-label="Increase">+</button>';
+      html += "</div>";
+      html += '<div class="set-exact-row">';
+      html += '<input type="text" class="set-exact" inputmode="decimal" enterkeyhint="done" ' +
+        'value="' + esc(fmtSettingInput(key, value, entry)) + '" data-key="' + esc(key) +
+        '" aria-label="' + esc(label) + ' value" spellcheck="false">';
+      html += "</div>";
+    } else {
+      // time, url, str — full-width field so a URL doesn't squash the label
+      html += '<div class="set-exact-row stack">';
+      if (kind === "url") {
+        html += '<textarea class="set-exact set-url" rows="2" enterkeyhint="done" data-key="' + esc(key) +
+          '" aria-label="' + esc(label) + '" spellcheck="false">' + esc(value == null ? "" : value) + "</textarea>";
+      } else {
+        html += '<input type="text" class="set-exact" enterkeyhint="done" value="' + esc(value == null ? "" : value) +
+          '" data-key="' + esc(key) + '" aria-label="' + esc(label) + '" spellcheck="false">';
+      }
+      html += '<button type="button" class="set-apply" data-act="set-apply" data-key="' + esc(key) +
+        '">Set in Telegram</button>';
+      html += "</div>";
+    }
+
+    html += '<div class="set-meta">' + esc(displayMeta(key, entry)) + "</div>";
+    if (entry.doc) html += '<div class="set-doc">' + esc(entry.doc) + "</div>";
+    html += "</div>";
+    return html;
+  }
+
+  function onSetInput(e) {
+    var t = e.target;
+    if (t.classList && t.classList.contains("set-range")) {
+      var key = t.getAttribute("data-key");
+      var entry = settingEntry(key);
+      var value = entry.kind === "int" ? parseInt(t.value, 10) : parseFloat(t.value);
+      ui.setPreview = { key: key, value: value };
+      updateRowPreview(t.closest(".set-row"), key, value, entry);
+    }
+  }
+
+  function onSetChange(e) {
+    var t = e.target;
+    if (t.classList && t.classList.contains("set-range")) {
+      var key = t.getAttribute("data-key");
+      var entry = settingEntry(key);
+      var value = entry.kind === "int" ? parseInt(t.value, 10) : parseFloat(t.value);
+      proposeSet(key, value);
+    }
+    if (t.classList && t.classList.contains("set-exact") && t.getAttribute("data-kind") !== "pending") {
+      // Enter/blur handled in onSetKey and blur listener.
+    }
+  }
+
+  function commitExact(input) {
+    if (!input || !input.classList.contains("set-exact")) return;
+    var key = input.getAttribute("data-key");
+    var entry = settingEntry(key);
+    var value = parseTyped(entry, input.value);
+    if (value == null) {
+      toast("That doesn't look like a " + (entry.kind || "value"));
+      input.value = fmtSettingInput(key, publishedValue(key), entry);
+      return;
+    }
+    proposeSet(key, value);
+  }
+
+  function onSetKey(e) {
+    if (e.key === "Enter" && e.target && e.target.classList && e.target.classList.contains("set-exact")) {
+      e.preventDefault();
+      e.target.blur();
+      commitExact(e.target);
+    }
+  }
+
+  function onSetBlur(e) {
+    if (e.target && e.target.classList && e.target.classList.contains("set-exact")) {
+      // If the sheet is about to open, don't fight it. Only revert if unchanged proposal.
+      var key = e.target.getAttribute("data-key");
+      var entry = settingEntry(key);
+      var value = parseTyped(entry, e.target.value);
+      var pub = publishedValue(key);
+      if (value == null || value === pub || (typeof value === "number" && Number(pub) === Number(value))) {
+        e.target.value = fmtSettingInput(key, pub, entry);
+      }
+    }
+  }
+
 
   /* ---------- Search ---------- */
 
@@ -1292,11 +1686,19 @@
 
   function openSheet(title, body, cmd) {
     if (!el.sheet) return;
+    var extra = "";
+    if (cmd) {
+      extra = '<div class="cmd" id="sheet-cmd">' + esc(cmd) + "</div>" +
+        '<div class="sheet-actions">' +
+          '<button type="button" class="sheet-sec" data-act="copy-cmd" data-cmd="' + esc(cmd) + '">Copy</button>' +
+          '<a class="sheet-pri" href="' + TG_BOT + '" target="_blank" rel="noopener noreferrer">Open Telegram</a>' +
+        "</div>";
+    }
     el.sheet.innerHTML = '<div class="sheet-card" role="dialog" aria-modal="true">' +
       '<div class="sheet-handle"></div>' +
       "<h2>" + esc(title) + "</h2>" +
       "<p>" + body + "</p>" +
-      (cmd ? '<div class="cmd">' + esc(cmd) + "</div>" : "") +
+      extra +
       '<button type="button" class="ok" data-act="close-sheet">OK</button>' +
     "</div>";
     el.sheet.removeAttribute("hidden");
@@ -1306,6 +1708,7 @@
     if (!el.sheet) return;
     el.sheet.setAttribute("hidden", "");
     el.sheet.innerHTML = "";
+    revertPreviews();
   }
 
   function toast(msg) {
@@ -1359,6 +1762,40 @@
     if (!node) return;
     var act = node.getAttribute("data-act");
     if (act === "close-sheet") { closeSheet(); return; }
+    if (act === "copy-cmd") {
+      var cmd = node.getAttribute("data-cmd") || "";
+      if (cmd && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(cmd).then(function () { toast("Copied"); }).catch(function () { toast("Copy failed"); });
+      } else {
+        toast(cmd ? "Copy: " + cmd : "Nothing to copy");
+      }
+      return;
+    }
+    if (act === "set-step") {
+      var key = node.getAttribute("data-key");
+      var dir = Number(node.getAttribute("data-dir") || "1");
+      var entry = settingEntry(key);
+      var cur = effectiveValue(key);
+      proposeSet(key, snapStep(entry, cur, dir));
+      return;
+    }
+    if (act === "set-bool") {
+      var key = node.getAttribute("data-key");
+      proposeSet(key, !publishedValue(key));
+      return;
+    }
+    if (act === "set-enum") {
+      var key = node.getAttribute("data-key");
+      proposeSet(key, node.getAttribute("data-value"));
+      return;
+    }
+    if (act === "set-apply") {
+      var key = node.getAttribute("data-key");
+      var row = node.closest(".set-row");
+      var inp = row && row.querySelector("input.set-exact");
+      if (inp) commitExact(inp);
+      return;
+    }
     if (act === "home") { go("home"); return; }
     if (act === "agents") { go("agents", { agent: node.getAttribute("data-agent") || "" }); return; }
     if (act === "activity") { go("activity"); return; }
@@ -1584,6 +2021,10 @@
       b.addEventListener("click", onTab);
     });
     el.app.addEventListener("click", onTap);
+    el.app.addEventListener("input", onSetInput);
+    el.app.addEventListener("change", onSetChange);
+    el.app.addEventListener("keydown", onSetKey);
+    el.app.addEventListener("focusout", onSetBlur);
     window.addEventListener("popstate", function () {
       applyHash();
       render();
@@ -1620,6 +2061,9 @@
     cache: cache,
     ui: ui,
     render: render,
+    formatSetCommand: formatSetCommand,
+    openSetSheet: openSetSheet,
+    proposeSet: proposeSet,
     stopPolls: function () {
       if (timers.state) { clearInterval(timers.state); timers.state = null; }
       if (timers.heavy) { clearInterval(timers.heavy); timers.heavy = null; }
