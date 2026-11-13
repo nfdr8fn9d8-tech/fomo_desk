@@ -1100,6 +1100,55 @@
 
   /* ---------- Account ---------- */
 
+  function fmtEligible(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    var parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Europe/London",
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23"
+    }).formatToParts(d);
+    var get = function (t) {
+      for (var i = 0; i < parts.length; i++) if (parts[i].type === t) return parts[i].value;
+      return "";
+    };
+    return get("weekday") + " " + get("day") + " " + get("month") + " " + get("year") +
+      ", " + get("hour") + ":" + get("minute") + " Europe/London";
+  }
+
+  function modeNote(acc, mode) {
+    var full = !!(acc && acc.full_paper_night);
+    var when = acc && acc.first_eligible_at ? fmtEligible(acc.first_eligible_at) : "";
+    if (mode === "LIVE") {
+      return "The desk is in LIVE. Switching back to PAPER is always allowed — send `paper` in Telegram. The badge follows published state.json; it is not changed from the app.";
+    }
+    if (full) {
+      return "A full PAPER night is on record. To switch to LIVE, send `live`, then type `LIVE`. Switching back to PAPER is always allowed. Mode here follows published state.json — it is not saved from the app.";
+    }
+    var msg = "LIVE needs one full PAPER night (08:00–08:00 Europe/London, desk running in PAPER) and you typing LIVE.";
+    if (when) msg += " The first full night completes at " + when + ".";
+    msg += " Mode is changed in Telegram on this setup — the badge follows published state.json.";
+    return msg;
+  }
+
+  function liveSheetBody(acc) {
+    var full = !!(acc && acc.full_paper_night);
+    var when = acc && acc.first_eligible_at ? fmtEligible(acc.first_eligible_at) : "";
+    if (full) {
+      return "This setup has no write API. Send `live`, then type `LIVE` (all caps) to confirm. The mode here updates from the published state after the desk applies it — it is not saved from the app.";
+    }
+    var msg = "LIVE needs at least one full PAPER night and you typing LIVE. This setup has no write API — send `live`, then type `LIVE` in Telegram. The desk will refuse the switch until a full night is on record.";
+    if (when) msg += " The first full PAPER night completes at " + when + ".";
+    msg += " The mode here stays as published.";
+    return msg;
+  }
+
   function renderAccount() {
     var acc = cache.account;
     var st = cache.state;
@@ -1117,7 +1166,7 @@
     html += '<button type="button" class="row" data-act="stack"><span class="k">Stack</span>' +
       '<span class="v chev">' + esc(isNum(stack) ? fmtUsd(stack) : "—") + "</span></button>";
     html += "</div>";
-    html += '<p class="note">Mode and stack are changed in Telegram on this setup.</p>';
+    html += '<p class="note">' + esc(modeNote(acc, mode)) + "</p>";
 
     var handle = acc && acc.fomo_handle ? acc.fomo_handle : "";
     var profile = acc ? fomoHref(acc.profile_url) : "";
@@ -1383,14 +1432,12 @@
     if (key === "desk.mode") {
       // Fall back to the dedicated LIVE/PAPER sheet wording.
       if (String(value).toUpperCase() === "LIVE") {
-        openSheet(
-          "Switch to LIVE",
-          "LIVE is confirmed in Telegram, not from the app on this setup. You will need to type LIVE, and the desk needs at least one full PAPER night.",
-          "live"
-        );
+        openSheet("Switch to LIVE", liveSheetBody(cache.account), "live");
         return;
       }
-      openSheet("Switch to PAPER", "Mode is changed in Telegram on this setup.", "paper");
+      openSheet("Switch to PAPER",
+        "Switching back to PAPER is always allowed. Send `paper` in Telegram. The mode here updates from the published state — it is not saved from the app.",
+        "paper");
       return;
     }
     if (key === "auditor.enabled" && value === false) {
@@ -1861,12 +1908,10 @@
       var cur = (cache.account && cache.account.mode) || (cache.state && cache.state.mode) || "PAPER";
       if (want === cur) return;
       if (want === "LIVE") {
-        openSheet("Switch to LIVE",
-          "LIVE is confirmed in Telegram, not from the app on this setup. You will need to type LIVE, and the desk needs at least one full PAPER night.",
-          "live");
+        openSheet("Switch to LIVE", liveSheetBody(cache.account), "live");
       } else {
         openSheet("Switch to PAPER",
-          "Mode is changed in Telegram on this setup.",
+          "Switching back to PAPER is always allowed. Send `paper` in Telegram. The mode here updates from the published state — it is not saved from the app.",
           "paper");
       }
       return;
