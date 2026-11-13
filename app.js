@@ -1446,7 +1446,8 @@
     }
     if (act === "test-push") {
       openSheet("Send test push",
-        "Test pushes are sent from Telegram on this setup. Message the desk bot and ask for a test, or send status.");
+        "Test pushes are sent from Telegram on this setup. Send this command to the desk bot.",
+        "test");
       return;
     }
     if (act === "auditor-toggle") {
