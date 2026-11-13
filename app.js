@@ -15,10 +15,8 @@
     var m = /(?:^|#|&)d=([^&]+)/.exec(hash);
     if (m && m[1]) {
       try { window.localStorage.setItem(LS_KEY, m[1]); } catch (e) {}
-      // Drop the fragment so the path is not left in the URL bar or history share.
-      if (window.history && window.history.replaceState) {
-        window.history.replaceState(null, "", window.location.pathname + window.location.search);
-      }
+      // Keep the fragment: an iOS Home Screen app has its own storage, so the
+      // saved Home Screen URL must still carry #d= for the first launch.
     }
   }
 
